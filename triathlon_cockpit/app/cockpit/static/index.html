@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Triathlon-Cockpit</title>
+<style>
+  :root {
+    --bg: #f5f5f3; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6b66; --line: #e3e2dd;
+    --ctl: #2f6fd6; --atl: #d9822b; --pos: #2e8b57; --neg: #c0392b; --warn-bg: #fff4e0; --warn-ink: #8a5a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --card: #1f1f1d; --ink: #ecebe6; --muted: #a09f99; --line: #34332f;
+            --ctl: #6ea0ff; --atl: #f0a35e; --pos: #5cc28a; --neg: #ef6b5b; --warn-bg: #3a2d12; --warn-ink: #f3c56b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 4px 0 12px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .sync { font-size: 13px; color: var(--muted); display: flex; gap: 10px; align-items: center; }
+  button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--card); color: var(--ink); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .banner { background: var(--warn-bg); color: var(--warn-ink); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; display: none; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .kpi .v { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .kpi .l { font-size: 12px; color: var(--muted); }
+  .kpi .d { font-size: 12px; font-variant-numeric: tabular-nums; }
+  .pos { color: var(--pos); } .neg { color: var(--neg); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td { padding: 7px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .done { color: var(--pos); }
+  .empty { color: var(--muted); font-size: 14px; }
+  svg text { fill: var(--muted); font-size: 11px; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 3px; vertical-align: middle; margin-right: 5px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Triathlon-Cockpit</h1>
+    <div class="sync"><span id="syncinfo">Lade …</span><button id="syncbtn" type="button">Jetzt abgleichen</button></div>
+  </header>
+  <div class="banner" id="banner"></div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Form (TrainingPeaks)</h2>
+      <div class="kpis" id="form"></div>
+    </section>
+    <section class="card">
+      <h2>Erholung letzte Nacht</h2>
+      <div class="kpis" id="recovery"></div>
+    </section>
+  </div>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2>Einheiten – heute und nächste 6 Tage</h2>
+    <div id="workouts"></div>
+  </section>
+
+  <section class="card">
+    <h2>Fitness (CTL), Ermüdung (ATL) und Form (TSB) – 120 Tage</h2>
+    <div id="chart"></div>
+    <div class="legend"><span><i style="background:var(--ctl)"></i>CTL</span><span><i style="background:var(--atl)"></i>ATL</span><span><i style="background:var(--pos)"></i>TSB +</span><span><i style="background:var(--neg)"></i>TSB −</span></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d = 0) => (v === null || v === undefined) ? "–" : Number(v).toLocaleString("de-AT", { maximumFractionDigits: d, minimumFractionDigits: d });
+const dayLabel = (iso) => new Date(iso + "T12:00:00").toLocaleDateString("de-AT", { weekday: "short", day: "2-digit", month: "2-digit" });
+const hm = (h) => { if (h == null) return "–"; const m = Math.round(h * 60); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`; };
+
+function kpi(label, value, delta, goodWhenUp = true) {
+  let d = "";
+  if (delta !== null && delta !== undefined && !Number.isNaN(delta)) {
+    const cls = delta === 0 ? "" : ((delta > 0) === goodWhenUp ? "pos" : "neg");
+    d = `<div class="d ${cls}">${delta > 0 ? "+" : ""}${fmt(delta, 1)} ggü. Ø7</div>`;
+  }
+  return `<div class="kpi"><div class="v">${value}</div><div class="l">${label}</div>${d}</div>`;
+}
+
+async function getJSON(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+  return r.json();
+}
+
+async function loadStatus() {
+  const s = await getJSON("api/status");
+  const when = s.last_ok ? new Date(s.last_ok).toLocaleString("de-AT", { dateStyle: "short", timeStyle: "short" }) : "noch nie";
+  $("syncinfo").textContent = s.running ? "Abgleich läuft …" : `Letzter Abgleich: ${when}`;
+  const b = $("banner");
+  if (s.auth_problem || s.last_error) {
+    b.style.display = "block";
+    b.textContent = s.auth_problem
+      ? "TrainingPeaks-Anmeldung fehlt oder ist abgelaufen: bitte in den Add-on-Einstellungen ein frisches Cookie eintragen und das Add-on neu starten."
+      : `Letzter Abgleich fehlgeschlagen: ${s.last_error}`;
+  } else b.style.display = "none";
+}
+
+async function loadToday() {
+  const t = await getJSON("api/today");
+  const f = t.fitness;
+  $("form").innerHTML = f
+    ? kpi("Fitness CTL", fmt(f.ctl)) + kpi("Ermüdung ATL", fmt(f.atl)) + kpi("Form TSB", `<span class="${f.tsb >= 0 ? "pos" : "neg"}">${fmt(f.tsb)}</span>`)
+    : `<div class="empty">Noch keine Daten.</div>`;
+  const r = t.recovery, base = t.baseline;
+  $("recovery").innerHTML = r
+    ? kpi("HRV ms", fmt(r.hrv), r.hrv != null && base.hrv_7 != null ? r.hrv - base.hrv_7 : null, true)
+      + kpi("Ruhepuls", fmt(r.rhr), r.rhr != null && base.rhr_7 != null ? r.rhr - base.rhr_7 : null, false)
+      + kpi("Schlaf h", fmt(r.sleep_h, 1), r.sleep_h != null && base.sleep_7 != null ? r.sleep_h - base.sleep_7 : null, true)
+    : `<div class="empty">Noch keine Daten.</div>`;
+  if (!t.workouts.length) { $("workouts").innerHTML = `<div class="empty">Keine Einheiten geplant.</div>`; return; }
+  $("workouts").innerHTML = "<table>" + t.workouts.map(w => `
+    <tr><td style="width:92px">${dayLabel(w.day)}</td>
+        <td>${w.title || w.type} <span class="tag">${w.type}</span></td>
+        <td class="n">${w.completed ? `<span class="done">✓ ${hm(w.actual_h)}</span>` : hm(w.planned_h)}</td>
+        <td class="n">${fmt(w.completed ? w.tss_actual : w.tss_planned)} TSS</td></tr>`).join("") + "</table>";
+}
+
+function drawChart(rows) {
+  if (!rows.length) { $("chart").innerHTML = `<div class="empty">Noch keine Daten.</div>`; return; }
+  const W = 940, H = 260, L = 34, R = 8, T = 10, B = 26, mid = 170;
+  const xs = (i) => L + (i / Math.max(rows.length - 1, 1)) * (W - L - R);
+  const maxLoad = Math.max(10, ...rows.map(r => Math.max(r.ctl || 0, r.atl || 0)));
+  const ys = (v) => T + (1 - v / maxLoad) * (mid - T);
+  const tsbMax = Math.max(10, ...rows.map(r => Math.abs(r.tsb || 0)));
+  const yb = (v) => mid + 40 - (v / tsbMax) * 34;
+  const line = (k) => rows.map((r, i) => r[k] == null ? "" : `${i && rows[i - 1][k] != null ? "L" : "M"}${xs(i).toFixed(1)} ${ys(r[k]).toFixed(1)}`).join("");
+  const bw = Math.max(1, (W - L - R) / rows.length - 1);
+  const bars = rows.map((r, i) => r.tsb == null ? "" : `<rect x="${(xs(i) - bw / 2).toFixed(1)}" y="${Math.min(yb(r.tsb), yb(0)).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.abs(yb(r.tsb) - yb(0)).toFixed(1)}" fill="var(${r.tsb >= 0 ? "--pos" : "--neg"})" opacity=".7"/>`).join("");
+  const ticks = [0, Math.round(maxLoad / 2), Math.round(maxLoad)].map(v => `<text x="${L - 6}" y="${ys(v) + 4}" text-anchor="end">${v}</text><line x1="${L}" x2="${W - R}" y1="${ys(v)}" y2="${ys(v)}" stroke="var(--line)"/>`).join("");
+  const step = Math.ceil(rows.length / 6);
+  const xl = rows.map((r, i) => i % step ? "" : `<text x="${xs(i)}" y="${H - 6}" text-anchor="middle">${dayLabel(r.day)}</text>`).join("");
+  $("chart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="CTL, ATL und TSB Verlauf">
+    ${ticks}<line x1="${L}" x2="${W - R}" y1="${yb(0)}" y2="${yb(0)}" stroke="var(--line)"/>${bars}
+    <path d="${line("atl")}" fill="none" stroke="var(--atl)" stroke-width="1.5"/>
+    <path d="${line("ctl")}" fill="none" stroke="var(--ctl)" stroke-width="2.5"/>${xl}</svg>`;
+}
+
+async function loadAll() {
+  try {
+    await loadStatus();
+    await loadToday();
+    drawChart((await getJSON("api/fitness?days=120")).rows);
+  } catch (e) { $("syncinfo").textContent = "Fehler beim Laden: " + e.message; }
+}
+
+$("syncbtn").addEventListener("click", async () => {
+  $("syncbtn").disabled = true; $("syncinfo").textContent = "Abgleich läuft …";
+  try { await getJSON("api/sync", { method: "POST" }); } catch (e) {}
+  $("syncbtn").disabled = false; loadAll();
+});
+loadAll();
+setInterval(loadStatus, 60000);
+</script>
+</body>
+</html>

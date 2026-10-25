@@ -1,0 +1,30 @@
+name: Triathlon-Cockpit
+version: "0.1.0"
+slug: triathlon_cockpit
+description: Training (TrainingPeaks), Erholung und Ernährung in einem Cockpit – mit Schnittstelle für Claude
+url: https://github.com/mkoeck75/triathlon-cockpit-ha
+arch:
+  - amd64
+  - aarch64
+init: false
+startup: application
+boot: auto
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:run-fast
+panel_title: Triathlon
+watchdog: "http://[HOST]:[PORT:8099]/api/health"
+# Bewusst minimale Rechte: kein Host-Netzwerk, kein Zugriff auf die HA-Konfiguration,
+# keine Hardware. Daten liegen nur in /data (in HA-Backups enthalten).
+options:
+  tp_auth_cookie: ""
+  sync_interval_min: 30
+  history_days: 120
+  plan_days_ahead: 21
+  log_level: info
+schema:
+  tp_auth_cookie: password
+  sync_interval_min: int(15,240)
+  history_days: int(14,730)
+  plan_days_ahead: int(0,90)
+  log_level: list(debug|info|warning|error)

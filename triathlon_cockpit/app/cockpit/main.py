@@ -13,6 +13,7 @@ from . import __version__
 from .ai import MealEstimator
 from .config import load_config
 from .db import Database
+from .sensors import SensorPublisher
 from .sync import SyncService
 from .tp import TrainingPeaksClient
 from .web import TrustedApps, build_app
@@ -43,6 +44,11 @@ async def _run() -> None:
     await web.TCPSite(runner, "0.0.0.0", cfg.port).start()
     log.info("Oberfläche läuft auf Port %s", cfg.port)
 
+    sensors = SensorPublisher(db, sync, session)
+    sync.listeners.append(sensors.publish)
+    sensors.start()
+    log.info("HA-Sensoren: %s", "aktiv (sensor.triathlon_*)" if sensors.available else "nicht verfügbar")
+
     if cfg.tp_auth_cookie:
         sync.start()
     else:
@@ -58,6 +64,7 @@ async def _run() -> None:
 
     log.info("Beende …")
     await sync.stop()
+    await sensors.stop()
     await runner.cleanup()
     await session.close()
     db.close()

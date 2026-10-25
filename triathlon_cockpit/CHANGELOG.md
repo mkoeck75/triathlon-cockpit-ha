@@ -1,5 +1,15 @@
 # Änderungen
 
+## 0.4.0 – 2026-10-25
+
+- Etappe 4: Trainingsänderungen über Claude – verschieben, ändern, neu anlegen. Immer erst als
+  Vorschlag; in TrainingPeaks geschrieben wird nur nach ausdrücklicher Freigabe (im Chat oder
+  per „Übernehmen“ in der Oberfläche). Absolvierte und vergangene Einheiten bleiben unangetastet,
+  gelöscht wird nichts. Nach dem Schreiben werden die betroffenen Tage sofort neu geladen.
+- HA-Sensoren `sensor.triathlon_*` (Form, HRV, Ruhepuls, Schlaf, kcal heute/übrig, Eiweiß,
+  Gewicht, Einheiten heute, nächste Einheit, offene Änderungen, letzter Abgleich) und
+  `binary_sensor.triathlon_trainingpeaks_problem` – für Automationen und Push-Meldungen.
+
 ## 0.3.1 – 2026-10-25
 
 - KI-Schätzung: kürzere Antworten angefordert (sonst brach die HA-Claude-Integration ab), zweiter Versuch mit knappem Kontext.

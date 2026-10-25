@@ -39,19 +39,43 @@ def fake_tp(cookie_ok: bool = True) -> web.Application:
         authed(req)
         return web.json_response({"user": {"userId": 42}})
 
+    store = {
+        1: {"workoutId": 1, "athleteId": 42, "workoutDay": "2026-10-24T00:00:00", "title": "Lange Ausfahrt",
+            "workoutTypeValueId": 2, "totalTime": 3.5, "tssActual": 121.3,
+            "normalizedPowerActual": 205, "heartRateAverage": 128},
+        2: {"workoutId": 2, "athleteId": 42, "workoutDay": "2026-10-26T00:00:00", "title": "Locker laufen",
+            "workoutTypeValueId": 3, "totalTimePlanned": 0.75, "tssPlanned": 40, "description": "GA1"},
+    }
+    state["store"] = store
+    state["puts"] = []
+
     async def workouts(req):
         authed(req)
         state["workout_calls"] += 1
         start, end = req.match_info["start"], req.match_info["end"]
-        out = []
-        if start <= "2026-10-24" <= end:
-            out.append({"workoutId": 1, "workoutDay": "2026-10-24T00:00:00", "title": "Lange Ausfahrt",
-                        "workoutTypeValueId": 2, "totalTime": 3.5, "tssActual": 121.3,
-                        "normalizedPowerActual": 205, "heartRateAverage": 128})
-        if start <= "2026-10-26" <= end:
-            out.append({"workoutId": 2, "workoutDay": "2026-10-26T00:00:00", "title": "Locker laufen",
-                        "workoutTypeValueId": 3, "totalTimePlanned": 0.75, "tssPlanned": 40})
-        return web.json_response(out)
+        return web.json_response([w for w in store.values() if start <= w["workoutDay"][:10] <= end])
+
+    async def workout_get(req):
+        authed(req)
+        w = store.get(int(req.match_info["wid"]))
+        return web.json_response(w) if w else web.json_response({}, status=404)
+
+    async def workout_put(req):
+        authed(req)
+        body = await req.json()
+        wid = int(req.match_info["wid"])
+        assert body["workoutId"] == wid and body["athleteId"] == 42 and "title" in body  # vollständiges Objekt
+        state["puts"].append(body)
+        store[wid] = body
+        return web.json_response(body)
+
+    async def workout_post(req):
+        authed(req)
+        body = await req.json()
+        assert body["workoutId"] == 0
+        new = dict(body, workoutId=max(store) + 1)
+        store[new["workoutId"]] = new
+        return web.json_response(new)
 
     async def fitness(req):
         authed(req)
@@ -77,6 +101,9 @@ def fake_tp(cookie_ok: bool = True) -> web.Application:
     app.router.add_get("/users/v3/token", token)
     app.router.add_get("/users/v3/user", user)
     app.router.add_get("/fitness/v6/athletes/42/workouts/{start}/{end}", workouts)
+    app.router.add_get("/fitness/v6/athletes/42/workouts/{wid:\\d+}", workout_get)
+    app.router.add_put("/fitness/v6/athletes/42/workouts/{wid:\\d+}", workout_put)
+    app.router.add_post("/fitness/v6/athletes/42/workouts", workout_post)
     app.router.add_post("/fitness/v1/athletes/42/reporting/performancedata/{start}/{end}", fitness)
     app.router.add_get("/metrics/v3/athletes/42/consolidatedtimedmetrics/{start}/{end}", metrics)
     app["state"] = state
@@ -359,3 +386,70 @@ async def test_delete_forbidden_for_claude(tmp_path):
                     today=lambda: TODAY, trusted=TrustedApps(["localhost"]))
     async with TestClient(TestServer(app, host="127.0.0.1")) as cl:
         assert (await cl.delete("/api/v1/meals/1")).status == 403
+
+
+async def test_training_changes_flow(tmp_path, tp_server):
+    db, session, sync = await _service(tmp_path, tp_server)
+    await sync.run_once()
+    app = build_app(db, sync, today=lambda: TODAY)
+    store = tp_server.app["state"]["store"]
+    os.environ["COCKPIT_ALLOW_ALL"] = "1"
+    try:
+        async with TestClient(TestServer(app)) as cl:
+            # Vorschlag: verschieben – schreibt noch NICHTS nach TP
+            r = await cl.post("/api/v1/training/changes", json={"action": "move", "workout_id": 2,
+                                                                 "changes": {"day": "2026-10-27"}, "reason": "HRV niedrig"})
+            assert r.status == 201
+            p = await r.json()
+            assert "verschieben" in p["summary"] and p["diff"][0]["before"] == "2026-10-26"
+            assert store[2]["workoutDay"].startswith("2026-10-26") and not tp_server.app["state"]["puts"]
+            # ohne confirm keine Übernahme
+            assert (await cl.post(f"/api/v1/training/changes/{p['change_id']}/apply", json={})).status == 400
+            a = await (await cl.post(f"/api/v1/training/changes/{p['change_id']}/apply", json={"confirm": True})).json()
+            assert a["ok"] and a["status"] == "applied"
+            assert store[2]["workoutDay"].startswith("2026-10-27") and store[2]["description"] == "GA1"  # Rest erhalten
+            assert db.query("SELECT day FROM tp_workouts WHERE workout_id=2")[0]["day"] == "2026-10-27"  # nachgeladen
+            assert (await cl.post(f"/api/v1/training/changes/{p['change_id']}/apply", json={"confirm": True})).status == 400
+            # Schutzregeln
+            assert (await cl.post("/api/v1/training/changes", json={"action": "update", "workout_id": 1,
+                                                                    "changes": {"title": "x"}})).status == 400  # absolviert
+            assert (await cl.post("/api/v1/training/changes", json={"action": "move", "workout_id": 2,
+                                                                    "changes": {"day": "2026-10-20"}})).status == 400  # Vergangenheit
+            assert (await cl.post("/api/v1/training/changes", json={"action": "move", "workout_id": 2,
+                                                                    "changes": {"day": "2026-10-28", "title": "x"}})).status == 400
+            assert (await cl.post("/api/v1/training/changes", json={"action": "update", "workout_id": 2,
+                                                                    "changes": {"bogus": 1}})).status == 400
+            # Ändern + Ablehnen
+            u = await (await cl.post("/api/v1/training/changes", json={"action": "update", "workout_id": 2,
+                       "changes": {"planned_h": 0.5, "tss_planned": 28, "description": "kürzer, locker"}})).json()
+            pend = await (await cl.get("/api/v1/training/changes")).json()
+            assert len(pend["changes"]) == 1 and pend["changes"][0]["id"] == u["change_id"]
+            assert (await (await cl.post(f"/api/v1/training/changes/{u['change_id']}/reject", json={})).json())["status"] == "rejected"
+            assert store[2]["totalTimePlanned"] == 0.75
+            # Neu anlegen
+            c = await (await cl.post("/api/v1/training/changes", json={"action": "create", "changes": {
+                "day": "2026-10-29", "title": "Rumpf 20'", "type": "Kraft", "planned_h": 0.33}})).json()
+            done = await (await cl.post(f"/api/v1/training/changes/{c['change_id']}/apply", json={"confirm": True})).json()
+            assert done["ok"] and store[done["workout_id"]]["workoutTypeValueId"] == 9
+            hist = await (await cl.get("/api/v1/training/changes?status=all")).json()
+            assert [h["status"] for h in hist["changes"]] == ["applied", "rejected", "applied"]
+    finally:
+        del os.environ["COCKPIT_ALLOW_ALL"]
+        await session.close()
+
+
+async def test_sensor_collect(tmp_path, tp_server):
+    from cockpit.sensors import collect
+    db, session, sync = await _service(tmp_path, tp_server)
+    await sync.run_once()
+    await session.close()
+    db.execute("INSERT INTO day_targets(day, kcal, protein_g) VALUES('2026-10-25', 2500, 170)")
+    db.execute("INSERT INTO meals(eaten_at, day, title, kcal, protein_g, created_at) "
+               "VALUES('2026-10-25T08:00','2026-10-25','Frühstück',600,40,'x')")
+    s = collect(db, sync, TODAY)
+    assert s["sensor.triathlon_form_tsb"][0] == -16.7
+    assert s["sensor.triathlon_hrv"][0] == 60 and s["sensor.triathlon_hrv"][1]["schnitt_7_tage"] == 57
+    assert s["sensor.triathlon_kcal_heute"][0] == 600 and s["sensor.triathlon_kcal_rest"][0] == 1900
+    assert s["sensor.triathlon_naechste_einheit"][0] == "Locker laufen"
+    assert s["binary_sensor.triathlon_trainingpeaks_problem"][0] == "off"
+    assert s["sensor.triathlon_offene_trainingsaenderungen"][0] == 0

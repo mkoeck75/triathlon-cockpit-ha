@@ -9,7 +9,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# Version 3: Trainingsänderungen (Vorschlag → Freigabe → TrainingPeaks)
+TRAINING_SCHEMA = """
+CREATE TABLE IF NOT EXISTS training_changes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at  TEXT NOT NULL,
+    action      TEXT NOT NULL,          -- move | update | create
+    workout_id  INTEGER,
+    changes     TEXT NOT NULL,          -- JSON der TP-Felder
+    reason      TEXT,
+    summary     TEXT,
+    before      TEXT,                   -- JSON: Zustand vor der Übernahme
+    status      TEXT NOT NULL DEFAULT 'proposed',  -- proposed | applied | rejected | failed
+    decided_at  TEXT,
+    decided_by  TEXT,
+    result_workout_id INTEGER,
+    error       TEXT,
+    source      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_training_changes_status ON training_changes(status);
+"""
 
 # Version 2: zusätzliche Felder für den Umzug aus Notion (Spalte, Typ) je Tabelle.
 V2_COLUMNS = {
@@ -197,6 +218,7 @@ class Database:
     def _migrate(self) -> None:
         with self._lock, self._conn:
             self._conn.executescript(SCHEMA_V1)
+            self._conn.executescript(TRAINING_SCHEMA)
             for table, cols in V2_COLUMNS.items():
                 have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
                 for name, typ in cols:
@@ -210,6 +232,10 @@ class Database:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(SCHEMA_VERSION),),
             )
+
+    def executescript(self, sql: str) -> None:
+        with self._lock, self._conn:
+            self._conn.executescript(sql)
 
     def execute(self, sql: str, params: Iterable[Any] = ()) -> int:
         with self._lock, self._conn:

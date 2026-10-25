@@ -8,6 +8,7 @@ kurzlebiges Bearer-Token getauscht. Läuft das Cookie ab, meldet der Client
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -103,6 +104,37 @@ class TrainingPeaksClient:
         return await self._request(
             "POST", f"/fitness/v1/athletes/{aid}/reporting/performancedata/{start}/{end}", body
         ) or []
+
+    async def workout(self, workout_id: int) -> dict:
+        aid = await self.athlete_id()
+        return await self._request("GET", f"/fitness/v6/athletes/{aid}/workouts/{int(workout_id)}")
+
+    # ── Schreiben (nur geplante Einheiten; Löschen ist bewusst nicht vorgesehen) ──
+    async def update_workout(self, workout_id: int, changes: dict) -> dict:
+        """TP verlangt beim PUT das vollständige Objekt: holen, zusammenführen, zurückschreiben."""
+        aid = await self.athlete_id()
+        existing = await self.workout(workout_id)
+        merged = {**existing, **changes, "athleteId": aid}
+        if merged.get("structure") is not None and not isinstance(merged["structure"], str):
+            merged["structure"] = json.dumps(merged["structure"])
+        return await self._request("PUT", f"/fitness/v6/athletes/{aid}/workouts/{int(workout_id)}", merged)
+
+    async def create_workout(self, data: dict) -> dict:
+        aid = await self.athlete_id()
+        structure = data.get("structure")
+        if structure is not None and not isinstance(structure, str):
+            structure = json.dumps(structure)
+        payload = {
+            "athleteId": aid, "workoutId": 0, "workoutDay": data["workoutDay"],
+            "workoutTypeValueId": data["workoutTypeValueId"], "workoutSubTypeId": data.get("workoutSubTypeId"),
+            "title": data["title"], "description": data.get("description"),
+            "coachComments": data.get("coachComments"), "athleteComments": None,
+            "totalTimePlanned": data.get("totalTimePlanned"), "distancePlanned": data.get("distancePlanned"),
+            "tssPlanned": data.get("tssPlanned"), "ifPlanned": data.get("ifPlanned"), "energyPlanned": None,
+            "feeling": None, "rpe": None, "orderOnDay": data.get("orderOnDay"), "structure": structure,
+            "userTags": data.get("userTags") or "", "workoutComments": [],
+        }
+        return await self._request("POST", f"/fitness/v6/athletes/{aid}/workouts", payload)
 
     async def metrics(self, start: str, end: str) -> list[dict]:
         """Gesundheitswerte (u. a. von Garmin synchronisiert): HRV, Schlaf, Ruhepuls …"""

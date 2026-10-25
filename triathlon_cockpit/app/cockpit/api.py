@@ -17,6 +17,7 @@ from aiohttp import web
 from . import __version__
 from .ai import EstimateError, MealEstimator, parse_when
 from .catalog import ENTITY_DOCS, register_catalog_api
+from .training import DOCS as TRAINING_DOCS, register_training_api
 from .db import Database
 from .sync import SyncService
 
@@ -85,6 +86,7 @@ API_INDEX = {
         {"method": "POST", "path": "/api/v1/favorites/{id}/log", "body": {"eaten_at": "optional", "factor": "Menge, Standard 1"},
          "does": "Favorit als Mahlzeit eintragen"},
         *ENTITY_DOCS,
+        *TRAINING_DOCS,
     ],
 }
 
@@ -507,3 +509,4 @@ def register_claude_api(app: web.Application, db: Database, sync: SyncService, t
     r.add_put("/api/v1/targets/{day}", target)
     r.add_post("/api/v1/sync", sync_now)
     register_catalog_api(app, db, _clean_meal)
+    register_training_api(app, db, sync, today)

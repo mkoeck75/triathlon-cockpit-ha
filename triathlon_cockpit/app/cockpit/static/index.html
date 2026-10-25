@@ -135,6 +135,12 @@
       <div id="meals"></div>
     </div>
 
+    <div class="card hidden" id="changes-card">
+      <h2>Vorgeschlagene Trainingsänderungen</h2>
+      <div class="small muted" style="margin-bottom:8px">Vom Coach vorgeschlagen – wird erst nach deinem OK in TrainingPeaks geschrieben.</div>
+      <div id="changes"></div>
+    </div>
+
     <div class="grid">
       <div class="card">
         <h2>Training</h2>
@@ -244,7 +250,43 @@ function kpi(label, value, delta, goodWhenUp = true, unit = "") {
   return `<div class="kpi"><div class="v">${value}</div><div class="l">${label}</div>${d}</div>`;
 }
 
+/* ---------- Trainingsänderungen ---------- */
+async function loadChanges() {
+  let c;
+  try { c = await api("api/v1/training/changes?status=proposed"); } catch (e) { return; }
+  const list = c.changes || [];
+  $("changes-card").classList.toggle("hidden", !list.length);
+  $("changes").innerHTML = list.map(ch => `
+    <div class="change" style="border-top:1px solid var(--line);padding:8px 0">
+      <div><b>${esc(ch.summary)}</b></div>
+      ${ch.reason ? `<div class="small muted">${esc(ch.reason)}</div>` : ""}
+      <table class="small" style="margin:6px 0">${(ch.diff || []).map(d =>
+        `<tr><td class="muted" style="padding-right:10px">${esc(d.field)}</td><td>${esc(d.before)}</td><td style="padding:0 6px">→</td><td><b>${esc(d.after)}</b></td></tr>`).join("")}</table>
+      <div class="row">
+        <button class="primary" type="button" data-apply="${ch.id}">Übernehmen</button>
+        <button class="ghost" type="button" data-reject="${ch.id}" style="flex:0 0 auto">Verwerfen</button>
+      </div>
+    </div>`).join("");
+}
+
+document.addEventListener("click", async (e) => {
+  const a = e.target.closest("[data-apply]"), r = e.target.closest("[data-reject]");
+  if (!a && !r) return;
+  const btn = a || r; btn.disabled = true;
+  try {
+    if (a) {
+      const res = await api(`api/v1/training/changes/${a.dataset.apply}/apply`, { method: "POST", body: { confirm: true } });
+      toast(res.ok ? "In TrainingPeaks übernommen" : `Fehlgeschlagen: ${res.error}`);
+    } else {
+      await api(`api/v1/training/changes/${r.dataset.reject}/reject`, { method: "POST", body: {} });
+      toast("Vorschlag verworfen");
+    }
+  } catch (err) { toast(err.message); }
+  loadChanges(); loadDay();
+});
+
 async function loadDay() {
+  loadChanges();
   $("daylabel").textContent = current === iso(new Date()) ? "Heute, " + dayLabel(current, true).split(", ")[1] : dayLabel(current, true);
   $("next").disabled = current >= iso(new Date());
   const d = await api(`api/v1/day?date=${current}`);

@@ -47,6 +47,8 @@ class SyncService:
         self._today = today
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
+        # Aufrufe nach jedem Abgleich (z. B. HA-Sensoren aktualisieren)
+        self.listeners: list = []
 
     async def run_once(self) -> SyncStatus:
         async with self._lock:
@@ -99,9 +101,30 @@ class SyncService:
                 st.running = False
             return st
 
+    async def refresh_days(self, days: list[str]) -> int:
+        """Nach einer Änderung nur die betroffenen Tage neu aus TP holen."""
+        n = 0
+        async with self._lock:
+            for d in sorted(set(days)):
+                ws = await self.client.workouts(d, d)
+                n += self.db.upsert_workouts(ws)
+                keep = {int(w["workoutId"]) for w in ws if w.get("workoutId") is not None}
+                self.db.delete_workouts_missing(d, d, keep)
+        for cb in self.listeners:
+            try:
+                await cb()
+            except Exception:
+                log.warning("Listener nach Nachladen fehlgeschlagen", exc_info=True)
+        return n
+
     async def _loop(self) -> None:
         while True:
             await self.run_once()
+            for cb in self.listeners:
+                try:
+                    await cb()
+                except Exception:
+                    log.warning("Listener nach Abgleich fehlgeschlagen", exc_info=True)
             # Bei abgelaufenem Cookie nicht im Minutentakt bei TP anklopfen.
             wait = self.interval * (4 if self.status.auth_problem else 1)
             await asyncio.sleep(wait)

@@ -145,6 +145,17 @@ def test_sleep_by_type_and_units():
     assert out["sleep_h"] == round(604 / 60, 2) and out["hrv"] == 61
 
 
+def test_real_tp_shapes():
+    # Formen wie im ersten echten Abgleich protokolliert
+    out = parse_metric_day({"timeStamp": "2026-10-25T00:00:00", "details": [
+        {"type": 6, "label": "Sleep Hours", "value": 5.1166},
+        {"type": 64, "label": "Body Battery", "value": [17, 73, 36.37]},
+        {"type": 62, "label": "Stress Level", "value": [None, 90, 27]},
+        {"type": 9, "label": "Weight", "value": 86}]})
+    assert (out["sleep_h"], out["bb_min"], out["bb_max"], out["stress_avg"], out["weight_kg"]) == \
+        (5.1166, 17, 73, 27, 86)
+
+
 def test_reparse_metrics(tmp_path):
     db = Database(tmp_path / "r.sqlite3")
     db.upsert_metrics([{"timeStamp": "2026-10-25T00:00:00",

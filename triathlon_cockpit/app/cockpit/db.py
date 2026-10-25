@@ -328,6 +328,12 @@ def _metric_key(d: dict) -> str | None:
         return None
 
 
+def _triple(value: Any) -> list:
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [p.strip() for p in str(value).split(",")] if value not in (None, "") else []
+
+
 def _hours(value: Any, units: str) -> float | None:
     v = _num(value)
     if v is None:
@@ -356,14 +362,14 @@ def parse_metric_day(day: dict) -> dict:
         elif key:
             if _num(value) is not None:
                 out[key] = _num(value)
-        elif label == "body battery":
-            # Format von TP: "min,max,durchschnitt"
-            parts = [p.strip() for p in str(value).split(",")]
+        elif label == "body battery" or str(d.get("type")) == "64":
+            # TP liefert [min, max, durchschnitt] (früher auch als Text "min,max,durchschnitt")
+            parts = _triple(value)
             if len(parts) >= 2:
                 out["bb_min"], out["bb_max"] = _num(parts[0]), _num(parts[1])
-        elif label == "stress level":
-            # Format: ",max,durchschnitt" – wir merken uns den Durchschnitt
-            parts = [p.strip() for p in str(value).split(",")]
+        elif label == "stress level" or str(d.get("type")) == "62":
+            # [min, max, durchschnitt] – wir merken uns den Durchschnitt
+            parts = _triple(value)
             if parts:
                 out["stress_avg"] = _num(parts[-1])
     out["raw"] = json.dumps(day, ensure_ascii=False)

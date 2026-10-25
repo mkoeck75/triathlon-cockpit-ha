@@ -1,5 +1,9 @@
 # Änderungen
 
+## 0.1.2 – 2026-10-25
+
+- Body Battery und Stress werden als Liste geliefert – jetzt korrekt ausgelesen.
+
 ## 0.1.1 – 2026-10-25
 
 - Schlafdauer und andere Gesundheitswerte robuster auslesen (TP-Typnummer + Einheit),

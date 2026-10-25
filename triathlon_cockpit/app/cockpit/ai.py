@@ -29,8 +29,8 @@ STRUCTURE = {
               "description": "Kurze Beschreibung der Mahlzeit ohne Uhrzeit, deutsch"},
     "meal_type": {"selector": {"select": {"options": MEAL_TYPES}}, "required": True,
                   "description": "Art der Mahlzeit (Uhrzeit beachten)"},
-    "items": {"selector": {"text": {"multiline": True}}, "required": True,
-              "description": "Zutaten mit Mengen und Einzelwerten, getrennt mit ' · '"},
+    "items": {"selector": {"text": {}}, "required": True,
+              "description": "Zutaten mit Mengen, kurz (max. 200 Zeichen), getrennt mit ' · '"},
     "kcal": {"selector": {"number": {}}, "required": True, "description": "kcal gesamt"},
     "protein_g": {"selector": {"number": {}}, "required": True, "description": "Eiweiß in g"},
     "carbs_g": {"selector": {"number": {}}, "required": True, "description": "Kohlenhydrate in g"},
@@ -41,7 +41,7 @@ STRUCTURE = {
     "rule_check": {"selector": {"select": {"options": RULE_CHECK}}, "required": True,
                    "description": "Ergebnis der Prüfung gegen die gültigen Regeln"},
     "warnings": {"selector": {"text": {}}, "required": False,
-                 "description": "Hinweise/Warnungen mit Begründung und Alternative, sonst leer"},
+                 "description": "Nur bei Regelverstoß: ein Satz mit Alternative, sonst leer"},
     "recipe_name": {"selector": {"text": {}}, "required": False,
                     "description": "Nur wenn ein vorhandenes Rezept verwendet wurde: genauer Rezeptname"},
     "recipe_grams": {"selector": {"number": {}}, "required": False,
@@ -85,15 +85,17 @@ def build_context(db: Database, on: str) -> str:
     return "\n".join(lines)
 
 
+WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+
+
 def build_instructions(text: str, when: datetime, context: str) -> str:
     return (
-        "Du bist Koch, Ernährungsassistent eines 51-jährigen Triathleten in Österreich. "
-        "Schätze die Nährwerte der gemeldeten Mahlzeit realistisch (österreichische Portionsgrößen). "
-        "Nutze zuerst den Lebensmittel-Stamm und vorhandene Rezepte (bei Rezept: Wert pro 100 g × Gramm), "
-        "sonst Standardwerte (BLS/USDA). Fehlende Mengen plausibel annehmen und in 'items' als Annahme "
-        "kennzeichnen. Prüfe gegen die gültigen Regeln. Antworte auf Deutsch.\n\n"
-        f"Zeitpunkt: {when.strftime('%A %d.%m.%Y %H:%M')}\n"
-        f"Mahlzeit laut Markus: {text}\n\n{context}"
+        "Schätze die Nährwerte dieser Mahlzeit eines Triathleten in Österreich realistisch "
+        "(österreichische Portionsgrößen). Nutze zuerst die Werte unten (Stamm, Rezepte: pro 100 g × Gramm), "
+        "sonst Standardwerte (BLS/USDA). Fehlende Mengen plausibel annehmen. Prüfe gegen die Regeln. "
+        "Antworte auf Deutsch und KURZ: items max. 200 Zeichen ohne Einzelwerte, warnings max. ein Satz.\n\n"
+        f"Zeitpunkt: {WEEKDAYS[when.weekday()]} {when.strftime('%d.%m.%Y %H:%M')}\n"
+        f"Mahlzeit: {text}\n\n{context}"
     )
 
 
@@ -148,12 +150,21 @@ class MealEstimator:
         text = (text or "").strip()
         if len(text) < 3:
             raise EstimateError("Bitte beschreiben, was du gegessen hast.")
-        payload = {
-            "task_name": "Triathlon-Cockpit Makros",
-            "entity_id": self.entity_id,
-            "instructions": build_instructions(text[:1000], when, build_context(db, when.date().isoformat())),
-            "structure": STRUCTURE,
-        }
+        context = build_context(db, when.date().isoformat())
+        last_err: EstimateError | None = None
+        # 1. Versuch mit vollem Kontext, 2. Versuch knapp (nur Regeln) – falls die Antwort abbricht
+        short = "HEUTE GÜLTIGE" + context.split("HEUTE GÜLTIGE", 1)[-1]
+        for attempt, ctx in enumerate((context, short), start=1):
+            try:
+                return await self._call(db, build_instructions(text[:600], when, ctx))
+            except EstimateError as err:
+                last_err = err
+                log.warning("KI-Schätzung Versuch %s fehlgeschlagen: %s", attempt, err)
+        raise last_err or EstimateError("KI-Schätzung fehlgeschlagen.")
+
+    async def _call(self, db: Database, instructions: str) -> dict:
+        payload = {"task_name": "Triathlon-Cockpit Makros", "entity_id": self.entity_id,
+                   "instructions": instructions, "structure": STRUCTURE}
         try:
             async with self.session.post(
                 f"{self.base}/services/ai_task/generate_data?return_response",
@@ -163,7 +174,8 @@ class MealEstimator:
                 body = await resp.text()
                 if resp.status >= 400:
                     log.warning("KI-Task HTTP %s: %s", resp.status, body[:300])
-                    raise EstimateError(f"KI-Task-Fehler (HTTP {resp.status}).")
+                    raise EstimateError("Die KI-Schätzung ist abgebrochen – bitte nochmal versuchen "
+                                        "oder im Chat mit Koch eintragen.")
         except (aiohttp.ClientError, TimeoutError) as err:
             raise EstimateError(f"KI-Task nicht erreichbar: {err.__class__.__name__}") from err
         try:

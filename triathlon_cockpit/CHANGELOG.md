@@ -1,5 +1,9 @@
 # Änderungen
 
+## 0.3.1 – 2026-10-25
+
+- KI-Schätzung: kürzere Antworten angefordert (sonst brach die HA-Claude-Integration ab), zweiter Versuch mit knappem Kontext.
+
 ## 0.3.0 – 2026-10-25
 
 - Etappe 3: Ernährung in der Oberfläche – Tagesbilanz Soll/Ist mit Makros, Mahlzeitenliste,

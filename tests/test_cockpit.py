@@ -249,3 +249,45 @@ async def test_trusted_app_guard(tmp_path):
                      today=lambda: TODAY, trusted=t2)
     async with TestClient(TestServer(app2, host="127.0.0.1")) as cl:
         assert (await cl.get("/api/v1")).status == 403
+
+
+async def test_import_and_catalog(tmp_path):
+    db = Database(tmp_path / "i.sqlite3")
+    app = build_app(db, SyncService(db, None, interval_min=30, history_days=14, plan_days_ahead=0), today=lambda: TODAY)
+    payload = {
+        "foods": [{"notion_id": "f1", "name": "Skyr natur", "kcal_100": 63, "protein_100": 11, "category": ["Milchprodukt"]}],
+        "sources": [{"notion_id": "s1", "title": "Beipackzettel X", "url": "https://example.org", "topic": ["Training"]}],
+        "rules": [{"notion_id": "r1", "rule": "Kein Alkohol", "active": "__YES__", "valid_from": "2026-10-01",
+                   "valid_to": "2026-10-20"},
+                  {"notion_id": "r2", "rule": "Eiweiß verteilen", "active": True}],
+        "recipes": [{"notion_id": "c1", "name": "Gulasch", "total_weight_g": 1000, "kcal": 2400, "protein_g": 150}],
+        "targets": [{"day": "2026-10-25", "day_type": "Mittel", "kcal": 2600, "notion_id": "t1"}],
+        "weights": [{"day": "2026-10-19", "weight_kg": 86.2}],
+        "meals": [{"notion_id": "m1", "recipe_notion_id": "c1", "eaten_at": "2026-10-25T12:30", "title": "Gulasch",
+                   "kcal": 360, "protein_g": 22.5, "recipe_grams": 150, "meal_type": "Mittagessen"}],
+    }
+    os.environ["COCKPIT_ALLOW_ALL"] = "1"
+    try:
+        async with TestClient(TestServer(app)) as cl:
+            r1 = await (await cl.post("/api/v1/import", json=payload)).json()
+            r2 = await (await cl.post("/api/v1/import", json=payload)).json()  # zweiter Lauf: keine Doppelten
+            assert r1["imported"]["meals"] == 1 and r2["ok"]
+            assert db.query("SELECT COUNT(*) n FROM meals")[0]["n"] == 1
+            meal = db.query("SELECT * FROM meals")[0]
+            assert meal["recipe_id"] == db.query("SELECT id FROM recipes")[0]["id"]
+            rec = await (await cl.get("/api/v1/recipes")).json()
+            assert rec["recipes"][0]["kcal_100"] == 240
+            rules = await (await cl.get("/api/v1/rules?on=2026-10-25")).json()
+            assert [r["rule"] for r in rules["rules"]] == ["Eiweiß verteilen"]
+            assert (await (await cl.get("/api/v1/rules?on=2026-10-10")).json())["count"] == 2
+            f = await (await cl.get("/api/v1/foods?q=skyr")).json()
+            assert f["foods"][0]["category"] == "Milchprodukt"
+            new = await (await cl.post("/api/v1/foods", json={"name": "Kornspitz", "kcal_100": 270, "unit_g": 70})).json()
+            assert (await cl.post("/api/v1/foods", json={"name": "Kornspitz"})).status == 400
+            p = await (await cl.patch(f"/api/v1/foods/{new['id']}", json={"kcal_100": 275})).json()
+            assert p["item"]["kcal_100"] == 275
+            assert (await cl.post("/api/v1/import", json={"meals": [{"title": "x"}]})).status == 400
+            day = await (await cl.get("/api/v1/day?date=2026-10-25")).json()
+            assert day["remaining"]["kcal_rest"] == 2240
+    finally:
+        del os.environ["COCKPIT_ALLOW_ALL"]

@@ -9,7 +9,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# Version 2: zusätzliche Felder für den Umzug aus Notion (Spalte, Typ) je Tabelle.
+V2_COLUMNS = {
+    "meals": [("notion_id", "TEXT"), ("calcium_mg", "REAL"), ("note", "TEXT")],
+    "recipes": [("notion_id", "TEXT"), ("calcium_mg", "REAL"), ("rule_check", "TEXT"), ("warnings", "TEXT")],
+    "foods": [("notion_id", "TEXT"), ("brand", "TEXT"), ("category", "TEXT"), ("calcium_100", "REAL"),
+              ("salt_100", "REAL"), ("sugar_100", "REAL"), ("nutrient_source", "TEXT")],
+    "nutrition_rules": [("notion_id", "TEXT"), ("source_title", "TEXT")],
+    "sources": [("notion_id", "TEXT"), ("notion_url", "TEXT")],
+    "day_targets": [("notion_id", "TEXT")],
+}
 
 # Version 1: Trainingsdaten aus TP + bereits das Gerüst für Ernährung (Etappe 3/4).
 SCHEMA_V1 = """
@@ -186,6 +197,14 @@ class Database:
     def _migrate(self) -> None:
         with self._lock, self._conn:
             self._conn.executescript(SCHEMA_V1)
+            for table, cols in V2_COLUMNS.items():
+                have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+                for name, typ in cols:
+                    if name not in have:
+                        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+                if any(c == "notion_id" for c, _ in cols):
+                    self._conn.execute(
+                        f"CREATE UNIQUE INDEX IF NOT EXISTS ux_{table}_notion ON {table}(notion_id)")
             self._conn.execute(
                 "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

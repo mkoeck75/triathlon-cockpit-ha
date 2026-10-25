@@ -1,5 +1,11 @@
 # Änderungen
 
+## 0.2.1 – 2026-10-25
+
+- Stammdaten für den Koch: Lebensmittel, Rezepte (inkl. Werte pro 100 g), Ernährungsregeln
+  (nach Gültigkeit), Quellen – lesen, anlegen, ändern.
+- Import aus Notion (mehrfach ausführbar, keine Doppelten).
+
 ## 0.2.0 – 2026-10-25
 
 - Etappe 2: Schnittstelle für Claude unter /api/v1 (Tagesüberblick, Einheiten, Details,

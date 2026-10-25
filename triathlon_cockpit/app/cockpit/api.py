@@ -14,6 +14,7 @@ from typing import Any
 from aiohttp import web
 
 from . import __version__
+from .catalog import ENTITY_DOCS, register_catalog_api
 from .db import Database
 from .sync import SyncService
 
@@ -25,8 +26,8 @@ MEAL_TYPES = ["Frühstück", "Mittagessen", "Abendessen", "Snack", "Training/Wet
 ACCURACY = ["Exakt (Stamm/Etikett)", "Gut geschätzt", "Grob geschätzt"]
 RULE_CHECK = ["OK", "Hinweis", "Warnung"]
 MEAL_FIELDS = ["eaten_at", "meal_type", "title", "items", "recipe_id", "recipe_grams", "kcal", "protein_g",
-               "carbs_g", "fat_g", "fiber_g", "accuracy", "rule_check", "warnings", "source"]
-NUM_FIELDS = {"recipe_id", "recipe_grams", "kcal", "protein_g", "carbs_g", "fat_g", "fiber_g"}
+               "carbs_g", "fat_g", "fiber_g", "calcium_mg", "accuracy", "rule_check", "warnings", "note", "source"]
+NUM_FIELDS = {"recipe_id", "recipe_grams", "kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "calcium_mg"}
 # Felder aus den TP-Rohdaten, die für die Analyse einer Einheit interessant sind
 WORKOUT_DETAIL_KEYS = [
     "title", "workoutDay", "startTime", "workoutTypeValueId", "totalTime", "totalTimePlanned",
@@ -71,9 +72,10 @@ API_INDEX = {
          "body": {"day_type": "Ruhetag|Locker|Mittel|Hart-Lang|Rennen", "kcal": "Zahl", "protein_g": "Zahl",
                   "carbs_g": "Zahl", "fat_g": "Zahl", "note": "optional"},
          "does": "Tagesziel setzen bzw. überschreiben"},
-        {"method": "GET", "path": "/api/v1/rules", "params": "on (Datum, Standard heute)",
-         "does": "An diesem Tag gültige Ernährungsregeln"},
+        {"method": "GET", "path": "/api/v1/rules", "params": "on (Datum, Standard heute), all=1 für alle",
+         "does": "An diesem Tag gültige, aktive Ernährungsregeln"},
         {"method": "POST", "path": "/api/v1/sync", "does": "Sofort mit TrainingPeaks abgleichen"},
+        *ENTITY_DOCS,
     ],
 }
 
@@ -349,12 +351,6 @@ def register_claude_api(app: web.Application, db: Database, sync: SyncService, t
                    "fat_g=excluded.fat_g, note=excluded.note", vals)
         return web.json_response({"ok": True, "target": db.query("SELECT * FROM day_targets WHERE day=?", (ds,))[0]})
 
-    async def rules(request: web.Request):
-        ds = _day(request.query.get("on"), today())
-        return web.json_response({"on": ds, "rules": db.query(
-            "SELECT * FROM nutrition_rules WHERE active = 1 AND (valid_from IS NULL OR valid_from <= ?) "
-            "AND (valid_to IS NULL OR valid_to >= ?) ORDER BY id", (ds, ds))})
-
     async def sync_now(_):
         st = await sync.run_once()
         return web.json_response({"ok": st.last_error is None, "error": st.last_error, "counts": st.counts})
@@ -373,5 +369,5 @@ def register_claude_api(app: web.Application, db: Database, sync: SyncService, t
     r.add_patch("/api/v1/meals/{meal_id}", meal_update)
     r.add_post("/api/v1/weight", weight)
     r.add_put("/api/v1/targets/{day}", target)
-    r.add_get("/api/v1/rules", rules)
     r.add_post("/api/v1/sync", sync_now)
+    register_catalog_api(app, db, _clean_meal)

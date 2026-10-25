@@ -1,5 +1,5 @@
 name: Triathlon-Cockpit
-version: "0.2.0"
+version: "0.2.1"
 slug: triathlon_cockpit
 description: Training (TrainingPeaks), Erholung und Ernährung in einem Cockpit – mit Schnittstelle für Claude
 url: https://github.com/mkoeck75/triathlon-cockpit-ha

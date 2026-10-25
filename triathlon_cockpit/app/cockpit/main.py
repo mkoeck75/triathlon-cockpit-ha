@@ -27,6 +27,7 @@ async def _run() -> None:
     log.info("Triathlon-Cockpit %s startet", __version__)
 
     db = Database(cfg.db_path)
+    log.info("Gesundheitsdaten neu ausgewertet: %s Tage", db.reparse_metrics())
     session = aiohttp.ClientSession(headers={"User-Agent": f"triathlon-cockpit-ha/{__version__}"})
     client = TrainingPeaksClient(cfg.tp_auth_cookie, session)
     sync = SyncService(db, client, interval_min=cfg.sync_interval_min,

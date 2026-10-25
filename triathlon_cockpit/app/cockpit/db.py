@@ -269,6 +269,11 @@ class Database:
             )
         return len(data)
 
+    def reparse_metrics(self) -> int:
+        """Gespeicherte Rohdaten neu auswerten (nach Verbesserungen am Auslesen)."""
+        days = [json.loads(r["raw"]) for r in self.query("SELECT raw FROM tp_metrics")]
+        return self.upsert_metrics(days) if days else 0
+
     # ── Sync-Protokoll ───────────────────────────────────────────────────────
     def log_sync_start(self) -> int:
         with self._lock, self._conn:
@@ -284,16 +289,55 @@ class Database:
             self._conn.execute("DELETE FROM sync_log WHERE id < ?", (sync_id - 500,))
 
 
-# Bezeichnungen, wie TP sie für Garmin-Werte liefert.
+# TP-Typnummern (stabiler als die Bezeichnungen) …
+_TYPES = {5: "rhr", 6: "sleep_h", 9: "weight_kg", 58: "steps", 60: "hrv"}
+# … und Bezeichnungen als Rückfallebene.
 _LABELS = {
     "hrv": "hrv",
     "sleep": "sleep_h",
+    "sleep hours": "sleep_h",
+    "total sleep": "sleep_h",
+    "time asleep": "sleep_h",
     "time in deep sleep": "deep_h",
     "time in rem sleep": "rem_h",
     "pulse": "rhr",
+    "resting heart rate": "rhr",
     "steps": "steps",
     "weight": "weight_kg",
 }
+
+
+def describe_metric_fields(days: list[dict]) -> list[str]:
+    """Welche Felder liefert TP? (für das Protokoll – nur Namen, Typ, Einheit, Beispielwert)"""
+    seen: dict[tuple, Any] = {}
+    for day in days:
+        for d in day.get("details") or []:
+            k = (d.get("type"), d.get("label"), d.get("units") or d.get("formatedUnits"))
+            seen.setdefault(k, d.get("value"))
+    return [f"type={t} label={l!r} units={u!r} z.B.={v!r} → {_metric_key({'type': t, 'label': l})}"
+            for (t, l, u), v in sorted(seen.items(), key=lambda x: str(x[0]))]
+
+
+def _metric_key(d: dict) -> str | None:
+    label = " ".join(str(d.get("label", "")).strip().lower().split())
+    if label in _LABELS:
+        return _LABELS[label]
+    try:
+        return _TYPES.get(int(d.get("type")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _hours(value: Any, units: str) -> float | None:
+    v = _num(value)
+    if v is None:
+        return None
+    u = (units or "").lower()
+    if u.startswith("min"):
+        return round(v / 60, 2)
+    if u.startswith("s"):
+        return round(v / 3600, 2)
+    return v
 
 
 def parse_metric_day(day: dict) -> dict:
@@ -304,8 +348,14 @@ def parse_metric_day(day: dict) -> dict:
     for d in day.get("details") or []:
         label = str(d.get("label", "")).strip().lower()
         value = d.get("value")
-        if label in _LABELS:
-            out[_LABELS[label]] = _num(value)
+        key = _metric_key(d)
+        if key in ("sleep_h", "deep_h", "rem_h"):
+            h = _hours(value, str(d.get("units") or d.get("formatedUnits") or ""))
+            if h is not None:
+                out[key] = h
+        elif key:
+            if _num(value) is not None:
+                out[key] = _num(value)
         elif label == "body battery":
             # Format von TP: "min,max,durchschnitt"
             parts = [p.strip() for p in str(value).split(",")]

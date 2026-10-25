@@ -138,6 +138,22 @@ async def test_client_raises_auth_error(tp_server):
             await c.athlete_id()
 
 
+def test_sleep_by_type_and_units():
+    out = parse_metric_day({"timeStamp": "2026-10-25T00:00:00", "details": [
+        {"type": 6, "label": "Sleep Duration", "value": 604, "units": "min"},
+        {"type": 60, "label": "HRV (rMSSD)", "value": 61}]})
+    assert out["sleep_h"] == round(604 / 60, 2) and out["hrv"] == 61
+
+
+def test_reparse_metrics(tmp_path):
+    db = Database(tmp_path / "r.sqlite3")
+    db.upsert_metrics([{"timeStamp": "2026-10-25T00:00:00",
+                        "details": [{"type": 6, "label": "Irgendwas", "value": 7.5}]}])
+    db._conn.execute("UPDATE tp_metrics SET sleep_h=NULL")
+    assert db.reparse_metrics() == 1
+    assert db.query("SELECT sleep_h FROM tp_metrics")[0]["sleep_h"] == 7.5
+
+
 def test_parse_metric_day_tolerates_missing():
     out = parse_metric_day({"timeStamp": "2026-10-01T00:00:00", "details": [{"label": "HRV", "value": ""}]})
     assert out["day"] == "2026-10-01" and out["hrv"] is None

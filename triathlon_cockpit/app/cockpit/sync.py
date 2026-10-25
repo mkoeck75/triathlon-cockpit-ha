@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
-from .db import Database
+from .db import Database, describe_metric_fields
 from .tp import TPAuthError, TPError, TrainingPeaksClient
 
 log = logging.getLogger(__name__)
@@ -66,9 +66,15 @@ class SyncService:
                     counts["workouts"] += self.db.upsert_workouts(ws)
                     keep = {int(w["workoutId"]) for w in ws if w.get("workoutId") is not None}
                     counts["deleted"] += self.db.delete_workouts_missing(a, b, keep)
+                metric_days: list[dict] = []
                 for a, b in _chunks(start, today):
                     counts["fitness"] += self.db.upsert_fitness(await self.client.fitness(a, b))
-                    counts["metrics"] += self.db.upsert_metrics(await self.client.metrics(a, b))
+                    days = await self.client.metrics(a, b)
+                    metric_days.extend(days)
+                    counts["metrics"] += self.db.upsert_metrics(days)
+                if not st.first_full_sync_done:
+                    for line in describe_metric_fields(metric_days):
+                        log.info("TP-Gesundheitsfeld: %s", line)
                 st.last_ok = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 st.last_error = None
                 st.auth_problem = False

@@ -8,12 +8,14 @@ Korrekturen gehen per PATCH.
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from aiohttp import web
 
 from . import __version__
+from .ai import EstimateError, MealEstimator, parse_when
 from .catalog import ENTITY_DOCS, register_catalog_api
 from .db import Database
 from .sync import SyncService
@@ -75,6 +77,13 @@ API_INDEX = {
         {"method": "GET", "path": "/api/v1/rules", "params": "on (Datum, Standard heute), all=1 für alle",
          "does": "An diesem Tag gültige, aktive Ernährungsregeln"},
         {"method": "POST", "path": "/api/v1/sync", "does": "Sofort mit TrainingPeaks abgleichen"},
+        {"method": "GET", "path": "/api/v1/nutrition", "params": "days (Standard 14)",
+         "does": "Ist/Soll je Tag + Gewichtsverlauf"},
+        {"method": "GET", "path": "/api/v1/favorites", "does": "Favoriten (häufige Mahlzeiten)"},
+        {"method": "POST", "path": "/api/v1/favorites", "body": "{meal_id} oder {title, meal_type, items, kcal, …}",
+         "does": "Favorit anlegen/aktualisieren"},
+        {"method": "POST", "path": "/api/v1/favorites/{id}/log", "body": {"eaten_at": "optional", "factor": "Menge, Standard 1"},
+         "does": "Favorit als Mahlzeit eintragen"},
         *ENTITY_DOCS,
     ],
 }
@@ -167,7 +176,8 @@ def _clean_meal(body: dict, partial: bool) -> dict:
     return data
 
 
-def register_claude_api(app: web.Application, db: Database, sync: SyncService, today) -> None:
+def register_claude_api(app: web.Application, db: Database, sync: SyncService, today,
+                        estimator: MealEstimator | None = None) -> None:
     async def index(_):
         return web.json_response({**API_INDEX, "version": __version__, "today": today().isoformat()})
 
@@ -355,7 +365,133 @@ def register_claude_api(app: web.Application, db: Database, sync: SyncService, t
         st = await sync.run_once()
         return web.json_response({"ok": st.last_error is None, "error": st.last_error, "counts": st.counts})
 
+    # ── Etappe 3: Freitext-Schätzung, Favoriten, Löschen aus der Oberfläche ─────
+    def _now() -> datetime:
+        return datetime.now().replace(second=0, microsecond=0)
+
+    async def meal_estimate(request: web.Request):
+        body = await _json(request)
+        if estimator is None:
+            raise _bad("KI-Schätzung ist nicht eingerichtet")
+        try:
+            when = parse_when(body.get("eaten_at"), _now())
+            proposal = await estimator.estimate(db, str(body.get("text", "")), when)
+        except EstimateError as err:
+            return web.json_response({"ok": False, "error": str(err)}, status=422)
+        proposal["eaten_at"] = when.isoformat(timespec="minutes")
+        proposal["source"] = "ki-task"
+        if body.get("save") and not proposal.get("question"):
+            data = _clean_meal({k: v for k, v in proposal.items() if k in MEAL_FIELDS}, partial=False)
+            data["created_at"] = datetime.now().isoformat(timespec="seconds")
+            mid = db.execute(f"INSERT INTO meals ({', '.join(data)}) VALUES ({', '.join('?' * len(data))})",
+                             list(data.values()))
+            return web.json_response({"ok": True, "saved": True, "meal_id": mid, "proposal": proposal,
+                                      "day_totals": _meal_totals(db, data["day"])}, status=201)
+        return web.json_response({"ok": True, "saved": False, "proposal": proposal})
+
+    def _ui_only(request: web.Request) -> None:
+        if request.get("caller", "ui") != "ui" and os.environ.get("COCKPIT_ALLOW_ALL") != "1":
+            raise web.HTTPForbidden(text=json.dumps({"error": "Löschen nur in der Oberfläche"}),
+                                    content_type="application/json")
+
+    async def meal_delete(request: web.Request):
+        _ui_only(request)
+        mid = int(request.match_info["meal_id"])
+        row = db.query("SELECT day FROM meals WHERE id = ?", (mid,))
+        if not row:
+            raise web.HTTPNotFound(text=json.dumps({"error": "Mahlzeit nicht gefunden"}), content_type="application/json")
+        db.execute("DELETE FROM meals WHERE id = ?", (mid,))
+        return web.json_response({"ok": True, "day_totals": _meal_totals(db, row[0]["day"])})
+
+    FAV_FIELDS = ["title", "meal_type", "items", "kcal", "protein_g", "carbs_g", "fat_g", "fiber_g"]
+
+    async def fav_list(_):
+        return web.json_response({"favorites": db.query(
+            "SELECT f.*, (SELECT COUNT(*) FROM meals m WHERE m.title = f.title) AS used "
+            "FROM favorites f ORDER BY used DESC, title")})
+
+    async def fav_create(request: web.Request):
+        body = await _json(request)
+        if body.get("meal_id"):
+            src = db.query("SELECT * FROM meals WHERE id = ?", (body["meal_id"],))
+            if not src:
+                raise _bad("Mahlzeit nicht gefunden")
+            body = {k: src[0][k] for k in FAV_FIELDS} | {k: v for k, v in body.items() if k in FAV_FIELDS}
+        data = {k: body.get(k) for k in FAV_FIELDS}
+        if not str(data.get("title") or "").strip():
+            raise _bad("title fehlt")
+        clean = _clean_meal({k: v for k, v in data.items() if v is not None}, partial=True)
+        clean.pop("eaten_at", None), clean.pop("day", None)
+        existing = db.query("SELECT id FROM favorites WHERE title = ?", (clean["title"],))
+        if existing:
+            db.execute(f"UPDATE favorites SET {', '.join(f'{k} = ?' for k in clean)} WHERE id = ?",
+                       [*clean.values(), existing[0]["id"]])
+            return web.json_response({"ok": True, "id": existing[0]["id"], "updated": True})
+        fid = db.execute(f"INSERT INTO favorites ({', '.join(clean)}) VALUES ({', '.join('?' * len(clean))})",
+                         list(clean.values()))
+        return web.json_response({"ok": True, "id": fid}, status=201)
+
+    async def fav_log(request: web.Request):
+        fid = int(request.match_info["fav_id"])
+        fav = db.query("SELECT * FROM favorites WHERE id = ?", (fid,))
+        if not fav:
+            raise web.HTTPNotFound(text=json.dumps({"error": "Favorit nicht gefunden"}), content_type="application/json")
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        factor = float(body.get("factor", 1) or 1)
+        if not 0.1 <= factor <= 5:
+            raise _bad("factor zwischen 0,1 und 5")
+        meal = {k: fav[0][k] for k in FAV_FIELDS if fav[0][k] is not None}
+        for k in ("kcal", "protein_g", "carbs_g", "fat_g", "fiber_g"):
+            if k in meal:
+                meal[k] = round(meal[k] * factor, 1)
+        if factor != 1:
+            meal["items"] = f"{factor:g} × Favorit: " + (meal.get("items") or meal["title"])
+        meal["eaten_at"] = body.get("eaten_at") or _now().isoformat(timespec="minutes")
+        meal["accuracy"] = "Gut geschätzt"
+        meal["source"] = "favorit"
+        data = _clean_meal(meal, partial=False)
+        data["created_at"] = datetime.now().isoformat(timespec="seconds")
+        mid = db.execute(f"INSERT INTO meals ({', '.join(data)}) VALUES ({', '.join('?' * len(data))})",
+                         list(data.values()))
+        return web.json_response({"ok": True, "meal_id": mid, "day_totals": _meal_totals(db, data["day"])},
+                                 status=201)
+
+    async def fav_delete(request: web.Request):
+        _ui_only(request)
+        db.execute("DELETE FROM favorites WHERE id = ?", (int(request.match_info["fav_id"]),))
+        return web.json_response({"ok": True})
+
+    async def nutrition(request: web.Request):
+        n = _int(request, "days", 14, 1, 120)
+        start = (today() - timedelta(days=n - 1)).isoformat()
+        ist = {r["day"]: r for r in db.query(
+            "SELECT day, SUM(kcal) kcal, SUM(protein_g) protein_g, SUM(carbs_g) carbs_g, SUM(fat_g) fat_g "
+            "FROM meals WHERE day >= ? GROUP BY day", (start,))}
+        soll = {r["day"]: r for r in db.query("SELECT * FROM day_targets WHERE day >= ?", (start,))}
+        out = []
+        for i in range(n):
+            d = (date.fromisoformat(start) + timedelta(days=i)).isoformat()
+            a, s = ist.get(d) or {}, soll.get(d) or {}
+            out.append({"day": d, "ist_kcal": _r(a.get("kcal"), 0), "ist_protein_g": _r(a.get("protein_g"), 0),
+                        "ist_carbs_g": _r(a.get("carbs_g"), 0), "ist_fat_g": _r(a.get("fat_g"), 0),
+                        "soll_kcal": s.get("kcal"), "soll_protein_g": s.get("protein_g"),
+                        "soll_carbs_g": s.get("carbs_g"), "soll_fat_g": s.get("fat_g"), "day_type": s.get("day_type")})
+        weights = db.query("SELECT day, weight_kg FROM body_weight ORDER BY day DESC LIMIT 30")
+        return web.json_response({"days": out, "weights": list(reversed(weights)),
+                                  "ki_available": bool(estimator and estimator.available)})
+
     r = app.router
+    r.add_post("/api/v1/meals/estimate", meal_estimate)
+    r.add_delete("/api/v1/meals/{meal_id:\\d+}", meal_delete)
+    r.add_get("/api/v1/favorites", fav_list)
+    r.add_post("/api/v1/favorites", fav_create)
+    r.add_post("/api/v1/favorites/{fav_id:\\d+}/log", fav_log)
+    r.add_delete("/api/v1/favorites/{fav_id:\\d+}", fav_delete)
+    r.add_get("/api/v1/nutrition", nutrition)
     r.add_get("/api/v1", index)
     r.add_get("/api/v1/", index)
     r.add_get("/api/v1/day", day_view)

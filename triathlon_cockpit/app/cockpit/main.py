@@ -10,6 +10,7 @@ import aiohttp
 from aiohttp import web
 
 from . import __version__
+from .ai import MealEstimator
 from .config import load_config
 from .db import Database
 from .sync import SyncService
@@ -35,7 +36,9 @@ async def _run() -> None:
 
     trusted = TrustedApps(list(cfg.trusted_apps))
     log.info("API-Zugriff erlaubt für: HA-Oberfläche%s", "".join(f", {s}" for s in cfg.trusted_apps))
-    runner = web.AppRunner(build_app(db, sync, trusted=trusted), access_log=None)
+    estimator = MealEstimator(session, cfg.ai_task_entity)
+    log.info("KI-Schätzung: %s", f"über {cfg.ai_task_entity}" if estimator.available else "nicht verfügbar")
+    runner = web.AppRunner(build_app(db, sync, trusted=trusted, estimator=estimator), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", cfg.port).start()
     log.info("Oberfläche läuft auf Port %s", cfg.port)

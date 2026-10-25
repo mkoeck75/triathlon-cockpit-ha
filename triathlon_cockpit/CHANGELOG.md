@@ -1,5 +1,14 @@
 # Änderungen
 
+## 0.3.0 – 2026-10-25
+
+- Etappe 3: Ernährung in der Oberfläche – Tagesbilanz Soll/Ist mit Makros, Mahlzeitenliste,
+  Essen per Freitext (Makro-Schätzung über den HA-KI-Task „Claude“, Vorschlag prüfen und korrigieren),
+  Favoriten mit einem Tipp (auch halbe Portion), Gewicht eintragen.
+- Neue Ansichten: Woche (kcal Ist/Soll, Wochentabelle), Form (CTL/ATL/TSB), Erholung (HRV, Ruhepuls, Schlaf, Gewicht).
+- Löschen von Mahlzeiten/Favoriten nur in der Oberfläche, nicht über Claude.
+- Zeitzone im Container (tzdata), damit „heute“ der österreichischen Zeit folgt.
+
 ## 0.2.1 – 2026-10-25
 
 - Stammdaten für den Koch: Lebensmittel, Rezepte (inkl. Werte pro 100 g), Ernährungsregeln

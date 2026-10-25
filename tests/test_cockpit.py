@@ -291,3 +291,71 @@ async def test_import_and_catalog(tmp_path):
             assert day["remaining"]["kcal_rest"] == 2240
     finally:
         del os.environ["COCKPIT_ALLOW_ALL"]
+
+
+def fake_supervisor(reply: dict, status: int = 200):
+    app = web.Application()
+    seen = {}
+
+    async def generate(req):
+        assert req.headers["Authorization"] == "Bearer TOKEN"
+        assert "return_response" in req.query
+        body = await req.json()
+        seen["body"] = body
+        assert body["entity_id"] == "ai_task.claude_ai_task"
+        assert "Skyr natur" in body["instructions"]  # Stamm als Kontext
+        return web.json_response({"changed_states": [], "service_response": {"data": reply}}, status=status)
+
+    app.router.add_post("/core/api/services/ai_task/generate_data", generate)
+    app["seen"] = seen
+    return app
+
+
+async def test_estimate_favorites_delete(tmp_path):
+    from cockpit.ai import MealEstimator
+    db = Database(tmp_path / "e.sqlite3")
+    db.execute("INSERT INTO foods(name, kcal_100, protein_100) VALUES('Skyr natur', 63, 11)")
+    db.execute("INSERT INTO recipes(name, cooked_on, total_weight_g, kcal) VALUES('Gulasch','2026-10-24',1000,2400)")
+    reply = {"title": "Gulasch-Rest + 2 Semmeln", "meal_type": "Mittagessen", "items": "150 g Gulasch · 2 Semmeln",
+             "kcal": 660, "protein_g": 30, "carbs_g": 70, "fat_g": 25, "fiber_g": 4, "accuracy": "Gut geschätzt",
+             "rule_check": "OK", "recipe_name": "Gulasch", "recipe_grams": 150, "question": ""}
+    sup = TestServer(fake_supervisor(reply))
+    await sup.start_server()
+    session = aiohttp.ClientSession()
+    est = MealEstimator(session, "ai_task.claude_ai_task", base_url=str(sup.make_url("/core/api")), token="TOKEN")
+    app = build_app(db, SyncService(db, None, interval_min=30, history_days=14, plan_days_ahead=0),
+                    today=lambda: TODAY, estimator=est)
+    os.environ["COCKPIT_ALLOW_ALL"] = "1"
+    try:
+        async with TestClient(TestServer(app)) as cl:
+            p = await (await cl.post("/api/v1/meals/estimate", json={"text": "Gulasch-Rest und 2 Semmeln",
+                                                                       "eaten_at": "2026-10-25T12:30"})).json()
+            assert p["ok"] and not p["saved"] and p["proposal"]["kcal"] == 660
+            assert p["proposal"]["recipe_id"] == 1 and p["proposal"]["recipe_grams"] == 150
+            s = await cl.post("/api/v1/meals/estimate", json={"text": "Gulasch-Rest und 2 Semmeln",
+                                                             "eaten_at": "2026-10-25T12:30", "save": True})
+            assert s.status == 201
+            mid = (await s.json())["meal_id"]
+            assert (await (await cl.post("/api/v1/meals/estimate", json={"text": "x"})).json())["ok"] is False
+            f = await (await cl.post("/api/v1/favorites", json={"meal_id": mid})).json()
+            lg = await cl.post(f"/api/v1/favorites/{f['id']}/log", json={"eaten_at": "2026-10-25T18:00", "factor": 0.5})
+            assert lg.status == 201 and (await lg.json())["day_totals"]["kcal"] == 990
+            favs = await (await cl.get("/api/v1/favorites")).json()
+            assert favs["favorites"][0]["used"] == 2
+            assert (await cl.delete(f"/api/v1/meals/{mid}")).status == 200
+            n = await (await cl.get("/api/v1/nutrition?days=3")).json()
+            assert n["days"][-1]["ist_kcal"] == 330 and n["ki_available"] is True
+    finally:
+        del os.environ["COCKPIT_ALLOW_ALL"]
+        await session.close()
+        await sup.close()
+
+
+async def test_delete_forbidden_for_claude(tmp_path):
+    from cockpit.web import TrustedApps
+    db = Database(tmp_path / "d.sqlite3")
+    db.execute("INSERT INTO meals(eaten_at, day, title, created_at) VALUES('2026-10-25T08:00','2026-10-25','x','n')")
+    app = build_app(db, SyncService(db, None, interval_min=30, history_days=14, plan_days_ahead=0),
+                    today=lambda: TODAY, trusted=TrustedApps(["localhost"]))
+    async with TestClient(TestServer(app, host="127.0.0.1")) as cl:
+        assert (await cl.delete("/api/v1/meals/1")).status == 403

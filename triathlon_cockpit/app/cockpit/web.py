@@ -84,9 +84,9 @@ def _avg(values):
 
 
 def build_app(db: Database, sync: SyncService, today=date.today,
-              trusted: TrustedApps | None = None) -> web.Application:
+              trusted: TrustedApps | None = None, estimator=None) -> web.Application:
     app = web.Application(middlewares=[make_guard(trusted or TrustedApps([]))])
-    register_claude_api(app, db, sync, today)
+    register_claude_api(app, db, sync, today, estimator)
 
     async def health(_):
         return web.json_response({"ok": True, "version": __version__})

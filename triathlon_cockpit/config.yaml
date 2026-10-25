@@ -1,5 +1,5 @@
 name: Triathlon-Cockpit
-version: "0.2.1"
+version: "0.3.0"
 slug: triathlon_cockpit
 description: Training (TrainingPeaks), Erholung und Ernährung in einem Cockpit – mit Schnittstelle für Claude
 url: https://github.com/mkoeck75/triathlon-cockpit-ha
@@ -14,18 +14,22 @@ ingress_port: 8099
 panel_icon: mdi:run-fast
 panel_title: Triathlon
 watchdog: "http://[HOST]:[PORT:8099]/api/health"
-# Bewusst minimale Rechte: kein Host-Netzwerk, kein Zugriff auf die HA-Konfiguration,
-# keine Hardware. Daten liegen nur in /data (in HA-Backups enthalten).
-# API-Zugriff: nur HA-Oberfläche (Ingress) und die HA-MCP-App (für Claude).
+# Bewusst minimale Rechte: kein Host-Netzwerk, keine Hardware, kein Dateizugriff auf die
+# HA-Konfiguration. Daten liegen nur in /data (in HA-Backups enthalten).
+# homeassistant_api: nur für den Aufruf des KI-Tasks (ai_task.generate_data) zur Makro-Schätzung.
+# API-Zugriff auf die App: nur HA-Oberfläche (Ingress) und die HA-MCP-App (für Claude).
+homeassistant_api: true
 options:
   tp_auth_cookie: ""
   sync_interval_min: 30
   history_days: 120
   plan_days_ahead: 21
   log_level: info
+  ai_task_entity: ai_task.claude_ai_task
 schema:
   tp_auth_cookie: password
   sync_interval_min: int(15,240)
   history_days: int(14,730)
   plan_days_ahead: int(0,90)
   log_level: list(debug|info|warning|error)
+  ai_task_entity: str?

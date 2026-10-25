@@ -2,36 +2,80 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import os
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
 from aiohttp import web
 
 from . import __version__
+from .api import TYPE_NAMES, register_claude_api
 from .db import Database
 from .sync import SyncService
 
 STATIC = Path(__file__).parent / "static"
 # Der HA-Supervisor leitet Ingress-Anfragen immer von dieser Adresse weiter.
 INGRESS_PROXY = ipaddress.ip_address("172.30.32.2")
-TYPE_NAMES = {1: "Schwimmen", 2: "Rad", 3: "Laufen", 4: "Koppel", 5: "Crosstraining", 6: "Rennen",
-              7: "Notiz", 8: "MTB", 9: "Kraft", 10: "Sonstiges", 11: "Langlauf", 12: "Rudern",
-              13: "Gehen", 29: "Kraft/Mobilität", 100: "Sonstiges"}
 
 
-@web.middleware
-async def only_ingress(request: web.Request, handler):
-    if request.path == "/api/health" or os.environ.get("COCKPIT_ALLOW_ALL") == "1":
-        return await handler(request)
-    peer = request.remote or ""
-    try:
-        if ipaddress.ip_address(peer) == INGRESS_PROXY:
+class TrustedApps:
+    """Erlaubt neben dem Ingress-Proxy nur ausgewählte HA-Apps (z. B. den HA-MCP-Server).
+
+    Apps sind im internen HA-Netz unter ihrem Slug als Hostnamen erreichbar
+    (``81f33d0f_ha_mcp`` → ``81f33d0f-ha-mcp``). Wir lösen die Namen auf und
+    vergleichen die Absenderadresse – ein Passwort ist dafür nicht nötig.
+    """
+
+    TTL = 300
+
+    def __init__(self, slugs: list[str]):
+        self.hosts = [s.strip().replace("_", "-") for s in slugs if s and s.strip()]
+        self._ips: set = set()
+        self._resolved_at = 0.0
+
+    async def _refresh(self) -> None:
+        loop = asyncio.get_running_loop()
+        ips = set()
+        for host in self.hosts:
+            try:
+                for info in await loop.getaddrinfo(host, None):
+                    ips.add(ipaddress.ip_address(info[4][0]))
+            except (OSError, ValueError):
+                continue
+        self._ips = ips
+        self._resolved_at = time.monotonic()
+
+    async def allows(self, ip) -> bool:
+        if not self.hosts:
+            return False
+        if ip in self._ips:
+            return True
+        # Adresse unbekannt oder Liste alt → einmal neu auflösen (Apps bekommen nach Neustart neue IPs)
+        if time.monotonic() - self._resolved_at > 5:
+            await self._refresh()
+        return ip in self._ips
+
+
+def make_guard(trusted: TrustedApps):
+    @web.middleware
+    async def guard(request: web.Request, handler):
+        if request.path == "/api/health" or os.environ.get("COCKPIT_ALLOW_ALL") == "1":
             return await handler(request)
-    except ValueError:
-        pass
-    raise web.HTTPForbidden(text="Nur über Home Assistant erreichbar.")
+        try:
+            ip = ipaddress.ip_address(request.remote or "")
+        except ValueError:
+            raise web.HTTPForbidden(text="Nur über Home Assistant erreichbar.")
+        if ip == INGRESS_PROXY:
+            request["caller"] = "ui"
+            return await handler(request)
+        if await trusted.allows(ip):
+            request["caller"] = "claude"
+            return await handler(request)
+        raise web.HTTPForbidden(text="Nur über Home Assistant erreichbar.")
+    return guard
 
 
 def _avg(values):
@@ -39,8 +83,10 @@ def _avg(values):
     return round(sum(vals) / len(vals), 1) if vals else None
 
 
-def build_app(db: Database, sync: SyncService, today=date.today) -> web.Application:
-    app = web.Application(middlewares=[only_ingress])
+def build_app(db: Database, sync: SyncService, today=date.today,
+              trusted: TrustedApps | None = None) -> web.Application:
+    app = web.Application(middlewares=[make_guard(trusted or TrustedApps([]))])
+    register_claude_api(app, db, sync, today)
 
     async def health(_):
         return web.json_response({"ok": True, "version": __version__})

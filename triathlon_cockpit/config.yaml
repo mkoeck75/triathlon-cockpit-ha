@@ -1,5 +1,5 @@
 name: Triathlon-Cockpit
-version: "0.1.2"
+version: "0.2.0"
 slug: triathlon_cockpit
 description: Training (TrainingPeaks), Erholung und Ernährung in einem Cockpit – mit Schnittstelle für Claude
 url: https://github.com/mkoeck75/triathlon-cockpit-ha
@@ -16,6 +16,7 @@ panel_title: Triathlon
 watchdog: "http://[HOST]:[PORT:8099]/api/health"
 # Bewusst minimale Rechte: kein Host-Netzwerk, kein Zugriff auf die HA-Konfiguration,
 # keine Hardware. Daten liegen nur in /data (in HA-Backups enthalten).
+# API-Zugriff: nur HA-Oberfläche (Ingress) und die HA-MCP-App (für Claude).
 options:
   tp_auth_cookie: ""
   sync_interval_min: 30

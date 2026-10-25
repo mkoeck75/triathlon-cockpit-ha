@@ -190,3 +190,62 @@ async def test_web_api_and_ingress_guard(tmp_path, tp_server):
             assert (await cl.get("/")).status == 200
         finally:
             del os.environ["COCKPIT_ALLOW_ALL"]
+
+
+async def test_claude_api(tmp_path, tp_server):
+    db, session, sync = await _service(tmp_path, tp_server)
+    await sync.run_once()
+    await session.close()
+    app = build_app(db, sync, today=lambda: TODAY)
+    os.environ["COCKPIT_ALLOW_ALL"] = "1"
+    try:
+        async with TestClient(TestServer(app)) as cl:
+            idx = await (await cl.get("/api/v1")).json()
+            assert any(e["path"] == "/api/v1/meals" for e in idx["endpoints"])
+            w = await (await cl.get("/api/v1/workouts?start=2026-10-20&end=2026-10-31")).json()
+            assert w["count"] == 2
+            det = await (await cl.get("/api/v1/workouts/1")).json()
+            assert det["details"]["normalizedPowerActual"] == 205
+            assert (await cl.get("/api/v1/workouts/999")).status == 404
+            # Mahlzeit eintragen, korrigieren, Tagessummen
+            r = await cl.post("/api/v1/meals", json={"eaten_at": "2026-10-25T12:30", "title": "Gulasch-Rest + 2 Semmeln",
+                                                     "meal_type": "Mittagessen", "kcal": 760, "protein_g": 38,
+                                                     "carbs_g": 80, "fat_g": 28, "accuracy": "Gut geschätzt"})
+            assert r.status == 201
+            m = await r.json()
+            assert m["day"] == "2026-10-25" and m["day_totals"]["kcal"] == 760
+            p = await (await cl.patch(f"/api/v1/meals/{m['meal_id']}", json={"kcal": 800})).json()
+            assert p["day_totals"]["kcal"] == 800
+            assert (await cl.post("/api/v1/meals", json={"kcal": 1})).status == 400
+            assert (await cl.post("/api/v1/meals", json={"title": "x", "meal_type": "Brunch"})).status == 400
+            assert (await cl.post("/api/v1/meals", json={"title": "x", "bogus": 1})).status == 400
+            # Gewicht + Tagesziel
+            assert (await cl.post("/api/v1/weight", json={"day": "2026-10-25", "weight_kg": 85.6})).status == 200
+            assert (await cl.post("/api/v1/weight", json={"weight_kg": 5})).status == 400
+            t = await (await cl.put("/api/v1/targets/2026-10-25", json={"day_type": "Mittel", "kcal": 2900,
+                                                                          "protein_g": 160, "carbs_g": 400, "fat_g": 80})).json()
+            assert t["target"]["kcal"] == 2900
+            day = await (await cl.get("/api/v1/day?date=2026-10-25")).json()
+            assert day["remaining"]["kcal_rest"] == 2100
+            assert day["latest_weight"]["weight_kg"] == 85.6
+            assert day["recovery"]["hrv"] == 60 and day["recovery_avg_7d"]["hrv"] == 57
+            wk = await (await cl.get("/api/v1/weeks?weeks=2")).json()
+            assert wk["weeks"][-1]["sports"]["Rad"]["h_done"] == 3.5
+            assert (await cl.get("/api/v1/day?date=gestern")).status == 400
+    finally:
+        del os.environ["COCKPIT_ALLOW_ALL"]
+
+
+async def test_trusted_app_guard(tmp_path):
+    from cockpit.web import TrustedApps
+    db = Database(tmp_path / "g.sqlite3")
+    t = TrustedApps(["localhost"])  # löst auf 127.0.0.1 auf
+    app = build_app(db, SyncService(db, None, interval_min=30, history_days=14, plan_days_ahead=0),
+                    today=lambda: TODAY, trusted=t)
+    async with TestClient(TestServer(app, host="127.0.0.1")) as cl:
+        assert (await cl.get("/api/v1")).status == 200
+    t2 = TrustedApps(["does-not-exist.invalid"])
+    app2 = build_app(db, SyncService(db, None, interval_min=30, history_days=14, plan_days_ahead=0),
+                     today=lambda: TODAY, trusted=t2)
+    async with TestClient(TestServer(app2, host="127.0.0.1")) as cl:
+        assert (await cl.get("/api/v1")).status == 403

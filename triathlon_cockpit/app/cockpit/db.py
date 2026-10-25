@@ -192,6 +192,10 @@ class Database:
                 (str(SCHEMA_VERSION),),
             )
 
+    def execute(self, sql: str, params: Iterable[Any] = ()) -> int:
+        with self._lock, self._conn:
+            return int(self._conn.execute(sql, tuple(params)).lastrowid or 0)
+
     def query(self, sql: str, params: Iterable[Any] = ()) -> list[dict]:
         with self._lock:
             return [dict(r) for r in self._conn.execute(sql, tuple(params)).fetchall()]

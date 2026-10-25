@@ -14,7 +14,7 @@ from .config import load_config
 from .db import Database
 from .sync import SyncService
 from .tp import TrainingPeaksClient
-from .web import build_app
+from .web import TrustedApps, build_app
 
 
 async def _run() -> None:
@@ -33,7 +33,9 @@ async def _run() -> None:
     sync = SyncService(db, client, interval_min=cfg.sync_interval_min,
                        history_days=cfg.history_days, plan_days_ahead=cfg.plan_days_ahead)
 
-    runner = web.AppRunner(build_app(db, sync), access_log=None)
+    trusted = TrustedApps(list(cfg.trusted_apps))
+    log.info("API-Zugriff erlaubt für: HA-Oberfläche%s", "".join(f", {s}" for s in cfg.trusted_apps))
+    runner = web.AppRunner(build_app(db, sync, trusted=trusted), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", cfg.port).start()
     log.info("Oberfläche läuft auf Port %s", cfg.port)

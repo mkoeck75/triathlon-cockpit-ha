@@ -290,6 +290,15 @@ def register_claude_api(app: web.Application, db: Database, sync: SyncService, t
         start = (today() - timedelta(days=n - 1)).isoformat()
         rows = db.query("SELECT day, hrv, sleep_h, deep_h, rem_h, rhr, bb_min, bb_max, stress_avg, steps, weight_kg "
                         "FROM tp_metrics WHERE day >= ? ORDER BY day", (start,))
+        # Gewicht je Tag der Achse: eingetragen vor Garmin/TP; fehlt ein Tag, gilt der vorige Wert
+        wmap = {r["day"]: r["weight_kg"] for r in db.query(
+            "SELECT day, weight_kg FROM tp_metrics WHERE weight_kg IS NOT NULL ORDER BY day")}
+        wmap.update({r["day"]: r["weight_kg"] for r in db.query("SELECT day, weight_kg FROM body_weight")})
+        wdays = sorted(wmap)
+        for row in rows:
+            prev = [d for d in wdays if d <= row["day"]]
+            row["weight_ff"] = wmap[prev[-1]] if prev else None
+            row["weight_measured"] = row["day"] in wmap
         return web.json_response({"days": rows})
 
     async def fitness(request: web.Request):

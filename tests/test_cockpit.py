@@ -256,6 +256,12 @@ async def test_claude_api(tmp_path, tp_server):
             assert day["remaining"]["kcal_rest"] == 2100
             assert day["latest_weight"]["weight_kg"] == 85.6
             assert day["recovery"]["hrv"] == 60 and day["recovery_avg_7d"]["hrv"] == 57
+            # Gewicht auf der Erholungs-Achse: eingetragen schlägt Garmin, Lücken mit Vorwert
+            rec = (await (await cl.get("/api/v1/recovery?days=28")).json())["days"]
+            byday = {r["day"]: r for r in rec}
+            assert byday["2026-10-25"]["weight_ff"] == 85.6 and byday["2026-10-25"]["weight_measured"]
+            later = [r for r in rec if r["day"] > "2026-10-25"]
+            assert all(r["weight_ff"] is not None for r in later)
             wk = await (await cl.get("/api/v1/weeks?weeks=2")).json()
             assert wk["weeks"][-1]["sports"]["Rad"]["h_done"] == 3.5
             assert (await cl.get("/api/v1/day?date=gestern")).status == 400

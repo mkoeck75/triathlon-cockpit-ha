@@ -1,5 +1,10 @@
 # Änderungen
 
+## 0.4.1 – 2026-10-29
+
+- Erholung: Gewichts-Diagramm nutzt dieselbe Datumsachse wie HRV/Ruhepuls/Schlaf (28 Tage).
+  Tage ohne Messung übernehmen den vorigen Wert; Punkte nur an Tagen mit echter Messung.
+
 ## 0.4.0 – 2026-10-25
 
 - Etappe 4: Trainingsänderungen über Claude – verschieben, ändern, neu anlegen. Immer erst als

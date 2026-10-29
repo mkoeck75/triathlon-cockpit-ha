@@ -408,7 +408,7 @@ function lineChart(el, rows, key, opts = {}) {
   const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
   const step = Math.ceil(rows.length / 6);
   const xl = rows.map((r, i) => i % step ? "" : `<text x="${xs(i)}" y="${H - 6}" text-anchor="${xs(i) > W - 70 ? "end" : (xs(i) < L + 30 ? "start" : "middle")}">${dayLabel(r.day)}</text>`).join("");
-  const dots = rows.map((r, i) => r[key] == null ? "" : `<circle cx="${xs(i)}" cy="${ys(r[key])}" r="2.5" fill="${opts.color || "var(--accent)"}"/>`).join("");
+  const dots = rows.map((r, i) => r[key] == null || (opts.measured && !r[opts.measured]) ? "" : `<circle cx="${xs(i)}" cy="${ys(r[key])}" r="2.5" fill="${opts.color || "var(--accent)"}"/>`).join("");
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(key)}">
     <line x1="${L}" x2="${W - R}" y1="${ys(avg)}" y2="${ys(avg)}" stroke="var(--line)" stroke-dasharray="4 4"/>
     <text x="${L - 6}" y="${ys(avg) + 4}" text-anchor="end">${fmt(avg, opts.dec || 0)}</text>
@@ -465,9 +465,7 @@ async function loadRecovery() {
   lineChart($("c-hrv"), rows, "hrv", { color: "var(--pos)" });
   lineChart($("c-rhr"), rows, "rhr", { color: "var(--neg)" });
   lineChart($("c-sleep"), rows, "sleep_h", { color: "var(--accent)", dec: 1 });
-  const n = await api("api/v1/nutrition?days=7");
-  const wr = n.weights.map(x => ({ day: x.day, kg: x.weight_kg }));
-  lineChart($("c-weight"), wr, "kg", { color: "var(--e)", dec: 1 });
+  lineChart($("c-weight"), rows, "weight_ff", { color: "var(--e)", dec: 1, measured: "weight_measured" });
 }
 
 /* ---------- Start ---------- */
